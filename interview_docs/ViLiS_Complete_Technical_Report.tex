@@ -1,0 +1,397 @@
+\documentclass[11pt,a4paper]{report}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=20mm]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{longtable}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=blue!70!black,
+    urlcolor=blue!70!black
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{ViLiS: Technical Reference Manual}
+\lhead{Visual Speech Recognition for Hindi}
+\rfoot{Page \thepage}
+
+\title{\textbf{\Huge ViLiS: Visual-Linguistic Speech Recognition}\\[0.6em]
+\Large An End-to-End Deep Learning Architecture for Hindi Lip-Reading\\[0.8em]
+\normalsize \textbf{Exhaustive Technical Specification, Dependency Audit, and Architectural Reference Manual}\\[0.4em]
+\small \textit{Structured for Direct Ingestion into Retrieval-Augmented Generation (RAG) Systems and Technical Defense}}
+
+\author{\textbf{Sameer Kumar} \& \textbf{Jaydev Das}\\
+Department of Computer Science \& Engineering, Silicon University\\
+Capstone Project: AR/VR \& Computer Vision $\vert$ FITT -- IIT Delhi}
+\date{Academic Year 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\chapter{Project Identity, Problem Domain, and Foundations}
+
+\section{Project Metadata and Executive Summary}
+\begin{itemize}
+    \item \textbf{System Name:} ViLiS (Visual-Linguistic Speech Recognition System).
+    \item \textbf{Target Domain:} Visual Speech Recognition (VSR) / Automated Lip-Reading.
+    \item \textbf{Target Language:} Hindi (Devanagari Script).
+    \item \textbf{Primary Problem Solved:} Enabling robust continuous speech transcription in acoustically degraded environments (high industrial noise, cocktail party noise, military/surveillance scenarios) and offering speech communication accessibility for aphonic and hearing-impaired individuals.
+    \item \textbf{Core Architectural Paradigm:} Spatio-Temporal 3D-CNN stem $\to$ 2D ResNet-18 spatial feature extractor $\to$ 12-layer Conformer sequence encoder $\to$ Connectionist Temporal Classification (CTC) decoder.
+    \item \textbf{Supervision Methodology:} Weak supervision via OpenAI Whisper large-v3 audio pseudo-labeling with dynamic time warping word timestamps, paired with MediaPipe FaceMesh affine roll-corrected lip region of interest (ROI) extraction.
+\end{itemize}
+
+\section{Acoustic vs. Visual Speech Modalities: An Information-Theoretic Comparison}
+Automatic Speech Recognition (ASR) processes one-dimensional pressure wave signals sampled at high temporal frequencies (typically 16,000 Hz or 44,100 Hz). In contrast, Visual Speech Recognition (VSR) processes three-dimensional spatio-temporal video volumes sampled at low temporal frame rates (25.0 to 30.0 frames per second).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Attribute} & \textbf{Acoustic Speech (ASR)} & \textbf{Visual Speech (VSR / ViLiS)} \\
+\midrule
+Primary Signal & 1D Acoustic Pressure Wave & 2D Image Sequence over Time \\
+Sampling Rate & 16,000 samples/sec (62.5 $\mu$s) & 25 frames/sec (40.0 ms per frame) \\
+Information Density & High phonetic spectral detail & Lower visual phonetic bandwidth \\
+Noise Sensitivity & Severely degrades under SNR $< 0$ dB & Invariant to acoustic background noise \\
+Vocal Tract State & Captures voicing, pitch, formants & Captures outer articulators (lips, teeth, tongue) \\
+Inherent Ambiguity & Low (phonetic clarity) & High (Homopheny: multiple phonemes per viseme) \\
+Dimensionality & $(T_{\text{audio}}, 80)$ Log-Mel Spectrogram & $(T_{\text{video}}, 1, 96, 96)$ Grayscale Pixels \\
+\bottomrule
+\end{tabular}
+\caption{Information-Theoretic Comparison of Acoustic vs. Visual Speech}
+\end{table}
+
+\section{The Physics and Biomechanics of Visual Speech Production}
+Human speech production is initiated by pulmonic egressive airflow from the lungs, modulated by the vocal folds in the larynx (generating voicing), and shaped by resonance in the pharyngeal, oral, and nasal cavities. The oral articulators are bifurcated into:
+\begin{enumerate}
+    \item \textbf{Internal (Hidden) Articulators:} The vocal cords, velum (soft palate), and pharynx. These control whether a consonant is voiced vs. unvoiced (e.g., /t/ vs. /d/) or nasal vs. oral (e.g., /b/ vs. /m/). These structures are completely invisible to an external camera.
+    \item \textbf{External (Visible) Articulators:} The upper lip, lower lip (labia), incisor teeth (dentes), and anterior tongue blade. These create visible constriction patterns that produce \textbf{visemes}.
+\end{enumerate}
+
+\section{The Viseme Concept and The Homopheny Dilemma in Hindi}
+A \textbf{viseme} is the visual analog of a phoneme—the minimal visually distinguishable unit of speech. The central mathematical obstacle in VSR is that the mapping from phonemes to visemes is \textbf{strictly many-to-one} (homopheny). Consequently, lip-reading is an ill-posed inverse problem.
+
+\subsection{Hindi Viseme Classification}
+In Hindi phonology, consonants are categorized by place of articulation (Sthana) and manner of articulation (Prayatna):
+\begin{enumerate}
+    \item \textbf{Bilabial Viseme Group (/p/, /pʰ/, /b/, /bʱ/, /m/ $\to$ प, फ, ब, भ, म):} Produced by complete hermetic closure of both lips followed by sudden release. Visually, words like ``पाप'' (sin), ``बाप'' (father), and ``माप'' (measure) exhibit identical optical flow trajectories at the oral boundary.
+    \item \textbf{Labiodental Viseme Group (/v/, /f/ $\to$ व, फ़):} Produced by contact between the lower lip and upper incisors.
+    \item \textbf{Dental Viseme Group (/t̪/, /t̪ʰ/, /d̪/, /d̪ʱ/, /n/ $\to$ त, थ, द, ध, न):} Produced by placing the tongue tip against the upper teeth. The oral aperture remains partially occluded, concealing internal aspiration differences.
+    \item \textbf{Retroflex Viseme Group (/ʈ/, /ʈʰ/, /ɖ/, /ɖʱ/, /ɳ/ $\to$ ट, ठ, ड, ढ, ण):} Produced by curling the tongue tip back against the hard palate.
+    \item \textbf{Velar / Glottal Viseme Group (/k/, /kʰ/, /g/, /gʱ/, /h/ $\to$ क, ख, ग, घ, ह):} Articulation occurs deep at the soft palate or glottis. Lip motion is largely passive, resulting in near-zero visual displacement.
+\end{enumerate}
+
+\subsection{Mathematical Disambiguation via Temporal Context and Language Modeling}
+To disambiguate homophenous visemes, ViLiS does not treat frames in isolation. Instead, it relies on two foundational principles:
+\begin{itemize}
+    \item \textbf{Temporal Co-articulation Modeling:} Lip muscles do not move discontinuously. The articulation of an upcoming sound influences the shape of preceding vowels (anticipatory co-articulation) and persists into subsequent consonants (carryover co-articulation). The 12-layer Conformer’s depthwise separable convolutions (kernel size 31 = 1.24 seconds) capture these trajectories over time.
+    \item \textbf{Statistical Language Constraints:} The CTC sequence modeling head projects emissions onto a valid SentencePiece vocabulary. While ``पाप'' and ``बाप'' look identical, their conditional probability given the surrounding sentence context ($P(W_i | W_{i-1}, W_{i+1})$) is strongly constrained by the grammar of Hindi.
+\end{itemize}
+
+\chapter{Exhaustive Audit of All Project Dependencies and Open-Source Libraries}
+
+\section{PyTorch (\texttt{torch >= 2.1.0})}
+\subsection{Origin, Architecture, and Underlying Implementation}
+PyTorch is an open-source deep learning framework originally developed by Meta AI and now maintained under the Linux Foundation. 
+Under the hood, PyTorch is implemented in high-performance C++17 and CUDA within the \textbf{ATen (A TENSOR)} tensor execution library, fronted by Python C-API bindings (pybind11).
+Key internal subsystems utilized in ViLiS:
+\begin{itemize}
+    \item \textbf{Autograd Engine:} Constructs a dynamic Directed Acyclic Graph (DAG) during the forward pass. Every node represents a mathematical tensor operation, and edges represent tensor gradient flow. Reverse-mode automatic differentiation executes during \texttt{loss.backward()}.
+    \item \textbf{Metal Performance Shaders (MPS) Execution Backend:} On Apple Silicon (MacBook Air M4), PyTorch dispatches operations through the \texttt{mps} device backend. This translates PyTorch tensor operations directly into Apple Metal compute shading kernels, utilizing the 10-core M4 GPU and Apple Unified Memory Architecture (UMA).
+    \item \textbf{Automatic Mixed Precision (AMP - \texttt{torch.cuda.amp}):} On NVIDIA GPUs, PyTorch manages automatic casting between IEEE 754 single-precision (FP32) and half-precision (FP16), backed by \texttt{GradScaler} to dynamically prevent gradient underflow.
+\end{itemize}
+
+\subsection{Exact Modules and Functions Used in ViLiS}
+\begin{itemize}
+    \item \texttt{torch.nn.Conv3d}: 3D spatio-temporal convolution in the visual stem.
+    \item \texttt{torch.nn.MultiheadAttention}: Scaled dot-product multi-head self-attention inside the Conformer blocks.
+    \item \texttt{torch.nn.CTCLoss}: Connectionist Temporal Classification loss function with \texttt{zero\_infinity=True}.
+    \item \texttt{torch.utils.data.DataLoader} and \texttt{Dataset}: Asynchronous batching, tensor collation, and memory management.
+    \item \texttt{torch.nn.utils.clip\_grad\_norm\_}: Enforces an $L_2$ norm threshold of 5.0 on parameter gradients to prevent exploding gradients.
+\end{itemize}
+
+\section{Torchvision (\texttt{torchvision >= 0.16.0})}
+\subsection{Origin and Implementation}
+Torchvision is PyTorch’s official computer vision package. It contains implementations of classical and modern vision architectures, C++ image I/O primitives, and standard vision transforms.
+\subsection{Exact Role in ViLiS}
+ViLiS utilizes \texttt{torchvision.models.resnet18(weights=ResNet18\_Weights.DEFAULT)}. 
+The ResNet-18 model was pretrained on the ImageNet-1k dataset (1.28 million natural images across 1,000 categories). In ViLiS:
+\begin{enumerate}
+    \item We extract the pretrained weights for residual stages \texttt{layer1}, \texttt{layer2}, \texttt{layer3}, and \texttt{layer4}.
+    \item We excise the initial 3-channel convolutional layer (\texttt{resnet.conv1}) and replace it with a 64-channel 2D convolution to interface with the 3D-CNN visual stem.
+    \item We discard the classification head (\texttt{resnet.avgpool} and \texttt{resnet.fc}), extracting raw 512-dimensional visual feature vectors per frame.
+\end{enumerate}
+
+\section{OpenCV (\texttt{opencv-python >= 4.8.0})}
+\subsection{Origin and Implementation}
+OpenCV (Open Source Computer Vision Library) is a C++ computer vision and machine learning software library originally developed by Intel. The Python package \texttt{opencv-python} wraps the native C++ OpenCV primitives via Python C-extensions, using NumPy arrays as the standard image buffer format.
+\subsection{Exact Functions Used in ViLiS}
+\begin{itemize}
+    \item \texttt{cv2.VideoCapture}: Native camera and video stream decoding.
+    \item \texttt{cv2.cvtColor(frame, cv2.COLOR\_BGR2GRAY)}: Converts 3-channel BGR video frames into single-channel luminance (Y channel) using the standard ITU-R BT.601 conversion formula:
+    $$Y = 0.299 \cdot R + 0.587 \cdot G + 0.114 \cdot B$$
+    \item \texttt{cv2.getRotationMatrix2D(center, angle, scale)}: Computes the $2 \times 3$ affine transformation matrix for horizontal lip roll correction.
+    \item \texttt{cv2.warpAffine(gray, M, (w, h), flags=cv2.INTER\_CUBIC)}: Applies affine transformation with bicubic interpolation over $4 \times 4$ pixel neighborhoods to prevent spatial aliasing.
+    \item \texttt{cv2.resize}: Normalizes all cropped lip bounding boxes to exactly $96 \times 96$ pixels.
+\end{itemize}
+
+\section{Google MediaPipe (\texttt{mediapipe >= 0.10.0})}
+\subsection{Origin, Architecture, and Underlying Neural Network}
+MediaPipe is a cross-platform framework developed by Google Research for applying multimodal applied machine learning pipelines over video streams.
+In ViLiS, we utilize \texttt{mediapipe.solutions.face\_mesh.FaceMesh}.
+\subsubsection{Under the Hood: The Two-Stage ML Pipeline}
+MediaPipe FaceMesh does not evaluate raw video frames with a single heavy model. It operates as a cascaded two-stage pipeline:
+\begin{enumerate}
+    \item \textbf{Stage 1: BlazeFace Face Detector:} A lightweight single-shot multibox detector (SSD) optimized for mobile GPU/CPU inference. It detects the presence of a face and computes bounding box coordinates and 6 coarse facial anchor points.
+    \item \textbf{Stage 2: 3D FaceMesh Landmark Regressor:} A deep convolutional neural network that takes the cropped face region from Stage 1 and regresses the 3D surface coordinates $(x, y, z)$ of 468 vertices (plus 10 iris vertices if refined). It predicts metric coordinates relative to the face center.
+\end{enumerate}
+
+\subsection{Exact Landmarks Used in ViLiS}
+ViLiS explicitly tracks 20 distinct landmark indices that define the outer and inner contours of the human lips:
+$$\mathcal{L}_{\text{lips}} = \{61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185\}$$
+Specifically:
+\begin{itemize}
+    \item \textbf{Landmark 61:} Left corner of the mouth (oral commissure).
+    \item \textbf{Landmark 291:} Right corner of the mouth.
+    \item \textbf{Landmarks 0 and 17:} Upper vermilion border center (Cupid's bow) and lower vermilion border center.
+\end{itemize}
+
+\section{OpenAI Whisper (\texttt{openai-whisper >= 20231117})}
+\subsection{Origin, Architecture, and Training Data}
+Whisper is an automatic speech recognition (ASR) system developed by OpenAI (Radford et al., 2022). It was trained on 680,000 hours of multilingual, multitask weakly supervised audio scraped from the web.
+\subsubsection{Under the Hood: Whisper Architecture}
+Whisper is an encoder-decoder Transformer:
+\begin{enumerate}
+    \item \textbf{Audio Preprocessing:} Audio sampled at 16,000 Hz is converted into an 80-channel log-magnitude Mel-spectrogram calculated over 25ms windows with a 10ms shift.
+    \item \textbf{Encoder Stem:} Two convolutional layers with a filter width of 3 and a stride of 2 sub-sample the input by a factor of 2.
+    \item \textbf{Encoder Blocks:} Standard Transformer encoder layers with Sinusoidal Positional Embeddings and Pre-LayerNorm.
+    \item \textbf{Decoder Blocks:} Autoregressive Transformer decoder predicting text tokens using byte-level Byte-Pair Encoding (BPE).
+\end{enumerate}
+
+\subsection{Exact Role in ViLiS: Dynamic Time Warping (DTW) Word-Level Alignment}
+In ViLiS, Whisper (\texttt{large-v3} on GPU, \texttt{medium} on M4 Mac) is executed in \texttt{pipelines/whisper\_pipeline.py}.
+By enabling word-level timestamp extraction, Whisper evaluates the cross-attention weights between decoder output tokens and encoder audio frames. By applying Dynamic Time Warping (DTW) on the cross-attention probability matrix, Whisper identifies the exact start time $t_{\text{start}}$ and end time $t_{\text{end}}$ of every spoken Hindi word in milliseconds. ViLiS slices the video frames corresponding to this temporal interval, generating ground-truth training pairs $(X_{\text{lip}}, Y_{\text{hindi}})$ automatically.
+
+\section{SentencePiece (\texttt{sentencepiece >= 0.1.99})}
+\subsection{Origin and Implementation}
+SentencePiece is an open-source, language-independent subword tokenizer developed by Google (Taku Kudo and John Richardson). It is implemented in C++ with Python bindings.
+\subsection{Why SentencePiece is Essential for Hindi}
+Traditional tokenizers (like Moses or NLTK) assume words are separated by whitespace. In Hindi, however, complex compound words and agglutinative inflections mean whitespace does not cleanly delineate linguistic concepts. SentencePiece treats the raw input as a continuous byte stream, treating whitespace as an ordinary character (represented by the meta-symbol \texttt{\_}).
+In ViLiS, SentencePiece is trained using the **Byte-Pair Encoding (BPE)** algorithm with a vocabulary size of 1,000 subwords, grouping high-frequency Hindi phonetic syllables (e.g., ``नमस्ते'', ``भारत'', ``सरकार'') into atomic tokens.
+
+\section{Decoding Libraries: \texttt{pyctcdecode} and \texttt{kenlm}}
+\subsection{Origin and Algorithms}
+\begin{itemize}
+    \item \textbf{\texttt{pyctcdecode} (>= 0.5.0):} An open-source CTC beam search decoding library originally created by Kensho Technologies. It implements a prefix-tree (trie) constrained beam search algorithm. Unlike naive greedy decoding (which simply takes the argmax at each frame), prefix beam search maintains the top $K$ candidate transcriptions, pruning low-probability paths.
+    \item \textbf{\texttt{kenlm}:} A fast language model querying library written in C++ by Kenneth Heafield. It utilizes a modified Kneser-Ney smoothing algorithm and represents $n$-gram language models in highly optimized sorted arrays (probing and trie data structures).
+\end{itemize}
+\subsection{Integration in ViLiS}
+During inference, the CTC head outputs per-frame emission probabilities $P(c_t | X)$. \texttt{pyctcdecode} combines these visual emissions with an external KenLM Hindi $n$-gram language model:
+$$\text{Score}(W) = \log P_{\text{CTC}}(W | X) + \alpha \log P_{\text{LM}}(W) + \beta |W|$$
+where $\alpha$ is the language model weight and $\beta$ is word insertion penalty. This allows the system to resolve homophenous words that look identical visually based on statistical grammar.
+
+\section{ONNX and ONNX Runtime (\texttt{onnx >= 1.14.0}, \texttt{onnxruntime >= 1.16.0})}
+\subsection{Origin and Implementation}
+ONNX (Open Neural Network Exchange) is an open format built to represent machine learning models, co-founded by Microsoft, Meta, and Amazon. It specifies an extensible computation graph model based on Protocol Buffers (protobuf) and standard operator definitions.
+ONNX Runtime is a high-performance cross-platform engine for executing ONNX models across various hardware backends through **Execution Providers (EPs)**.
+\subsection{Integration in ViLiS}
+In \texttt{inference/export\_onnx.py}, ViLiS traces the trained PyTorch computational graph into a standalone \texttt{.onnx} file. Crucially, the export specifies \textbf{dynamic axes}:
+\begin{itemize}
+    \item \texttt{batch\_size}: Allows evaluating single inputs or batched clips dynamically.
+    \item \texttt{time\_steps}: Allows inputs of variable frame lengths (e.g., 2-second clips vs. 5-second clips) without zero-padding.
+\end{itemize}
+On macOS, ONNX Runtime dispatches execution to the **CoreML Execution Provider**, mapping convolutions directly to the Apple Neural Engine (ANE) and Metal GPU.
+
+\section{Supporting Libraries: NumPy, PyAV, tqdm, editdistance}
+\begin{itemize}
+    \item \textbf{\texttt{numpy}:} Provides C-contiguous $N$-dimensional array objects (\texttt{ndarray}) used as the unified data interchange format across OpenCV, MediaPipe, and PyTorch.
+    \item \textbf{\texttt{av} (PyAV):} Pythonic binding for the FFmpeg multimedia framework. It directly interfaces with native \texttt{libavcodec}, \texttt{libavformat}, and \texttt{libavutil} C libraries, enabling precise frame-level decoding of video containers without launching external shell subprocesses.
+    \item \textbf{\texttt{tqdm}:} Provides low-overhead visual progress bars for dataset ingestion loops and epoch iterations.
+    \item \textbf{\texttt{editdistance}:} A high-performance C-extension implementation of the Levenshtein distance algorithm, executing in $O(m \cdot n)$ time to compute Character Error Rate (CER) and Word Error Rate (WER).
+\end{itemize}
+
+\chapter{Detailed Pretrained Model Audits}
+
+\section{Pretrained Model 1: Google MediaPipe FaceMesh}
+\begin{itemize}
+    \item \textbf{Developer / Organization:} Google Research (Valentin Bazarevsky, Yury Kartynnik, et al., 2019--2020).
+    \item \textbf{Underlying Neural Architecture:} MobileNetV2-like depthwise separable convolutional backbone combined with residual squeeze-and-excitation blocks, executing over a custom quantized TensorFlow Lite (TFLite) runtime.
+    \item \textbf{Training Corpora:} Trained on Google’s internal dataset of over 30,000 diverse in-the-wild facial video sequences with extreme lighting, demographic variance, and pose perturbations.
+    \item \textbf{Input / Output Specifications:}
+    \begin{itemize}
+        \item Input: RGB image normalized to $[-1.0, 1.0]$.
+        \item Output: Tensor of shape $(468, 3)$ representing metric 3D coordinates $(x, y, z)$ normalized to image dimensions.
+    \end{itemize}
+    \item \textbf{License:} Apache 2.0.
+\end{itemize}
+
+\section{Pretrained Model 2: ResNet-18 (Residual Network)}
+\begin{itemize}
+    \item \textbf{Developer / Organization:} Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun (Microsoft Research, 2015).
+    \item \textbf{Underlying Neural Architecture:} 18-layer deep convolutional neural network featuring identity residual skip connections ($y = \mathcal{F}(x) + x$). Built from 4 residual stages (\texttt{layer1} through \texttt{layer4}) containing \texttt{BasicBlock} modules (two $3 \times 3$ convolutions with Batch Normalization and ReLU).
+    \item \textbf{Training Corpora:} Pretrained on ImageNet-1k (ILSVRC 2012), consisting of 1.28 million training images categorized into 1,000 object classes.
+    \item \textbf{Weights Artifact:} \texttt{ResNet18\_Weights.DEFAULT} (Top-1 Accuracy: 69.758\%, Top-5 Accuracy: 89.078\%).
+    \item \textbf{ViLiS Architectural Adaptation:} In \texttt{model/frontend.py}, the first convolutional layer (\texttt{conv1}) is surgically replaced:
+    $$\text{Standard ResNet-18: } \texttt{Conv2d(in=3, out=64, kernel=7, stride=2, padding=3)}$$
+    $$\text{ViLiS Patched ResNet-18: } \texttt{Conv2d(in=64, out=64, kernel=7, stride=2, padding=3)}$$
+    Pretrained weights are preserved across all subsequent residual stages.
+\end{itemize}
+
+\section{Pretrained Model 3: OpenAI Whisper (large-v3 and medium)}
+\begin{itemize}
+    \item \textbf{Developer / Organization:} OpenAI (Alec Radford, Jong Wook Kim, et al., 2022--2023).
+    \item \textbf{Underlying Neural Architecture:} Seq2seq Encoder-Decoder Transformer.
+    \begin{itemize}
+        \item \texttt{large-v3}: 32 encoder layers, 32 decoder layers, 1280 hidden dimension, 20 attention heads, 1.55 billion parameters.
+        \item \texttt{medium}: 24 encoder layers, 24 decoder layers, 1024 hidden dimension, 16 attention heads, 769 million parameters.
+    \end{itemize}
+    \item \textbf{Training Corpora:} 680,000 hours of multilingual internet audio paired with weakly aligned transcripts.
+    \item \textbf{Role in ViLiS:} Automated pseudo-label generator in \texttt{pipelines/whisper\_pipeline.py}.
+\end{itemize}
+
+\chapter{End-to-End System Architecture and Tensor Dimensions}
+
+\section{Tensor Lifecycle and Dimensional Transformations}
+The table below specifies the exact mathematical transformation and tensor dimensionality at every stage of the ViLiS pipeline for a standard batch during training:
+
+\begin{longtable}{lll}
+\toprule
+\textbf{Pipeline Stage} & \textbf{Tensor Shape} & \textbf{Mathematical Transformation} \\
+\midrule
+\endhead
+Raw Video Input & $(B, T, 3, H_{\text{orig}}, W_{\text{orig}})$ & Video container demuxed via OpenCV/PyAV \\
+Grayscale Conversion & $(B, T, 1, H_{\text{orig}}, W_{\text{orig}})$ & $Y = 0.299R + 0.587G + 0.114B$ \\
+MediaPipe FaceMesh & $(468, 3)$ coordinates & Landmark regression per frame \\
+Affine Roll Correction & $(B, T, 1, H_{\text{orig}}, W_{\text{orig}})$ & $\text{warpAffine}(M_{\theta})$, bicubic interpolation \\
+Lip ROI Cropping & $(B, T, 1, 96, 96)$ & Centered at mouth centroid, padded by 30\% \\
+\midrule
+\textbf{3D-CNN Stem} & & \\
+3D Convolution & $(B, 64, T, 48, 48)$ & $\text{Conv3d}(1 \to 64, k=(5,7,7), s=(1,2,2))$ \\
+BatchNorm3d + ReLU & $(B, 64, T, 48, 48)$ & Spatial-temporal normalization \\
+MaxPool3d & $(B, 64, T, 24, 24)$ & $\text{MaxPool3d}(k=(1,3,3), s=(1,2,2))$ \\
+\midrule
+\textbf{ResNet-18 Backbone} & & \\
+Frame Permutation & $(B \cdot T, 64, 24, 24)$ & Collapse batch and time for 2D ResNet \\
+Patched Conv1 + BN & $(B \cdot T, 64, 12, 12)$ & $\text{Conv2d}(64 \to 64, k=7, s=2)$ \\
+Residual Layer 1 & $(B \cdot T, 64, 12, 12)$ & 2 $\times$ BasicBlock ($64 \to 64$) \\
+Residual Layer 2 & $(B \cdot T, 128, 6, 6)$ & 2 $\times$ BasicBlock ($64 \to 128$, stride 2) \\
+Residual Layer 3 & $(B \cdot T, 256, 3, 3)$ & 2 $\times$ BasicBlock ($128 \to 256$, stride 2) \\
+Residual Layer 4 & $(B \cdot T, 512, 2, 2)$ & 2 $\times$ BasicBlock ($256 \to 512$, stride 2) \\
+Adaptive AvgPool2d & $(B \cdot T, 512, 1, 1)$ & Pool spatial dimensions to $1 \times 1$ \\
+Reshape to Sequence & $(B, T, 512)$ & Feature projection per time frame \\
+\midrule
+\textbf{Conformer Encoder} & & \\
+Positional Encoding & $(B, T, 512)$ & Addition of Sinusoidal Positional Embeddings \\
+12 $\times$ Conformer Blocks & $(B, T, 512)$ & Macaron FFN $\to$ MHSA $\to$ DepthwiseConv $\to$ FFN \\
+Layer Normalization & $(B, T, 512)$ & Final sequence layer norm \\
+\midrule
+\textbf{CTC Prediction Head} & & \\
+Linear Projection & $(B, T, |\mathcal{V}|)$ & $\text{Linear}(512 \to |\mathcal{V}|)$ \\
+Log-Softmax & $(B, T, |\mathcal{V}|)$ & $\log \text{softmax}(\cdot, \text{dim}=-1)$ \\
+\midrule
+\textbf{Loss Computation} & & \\
+CTC Transpose & $(T, B, |\mathcal{V}|)$ & Reorder for PyTorch \texttt{nn.CTCLoss} \\
+CTC Forward-Backward & Scalar Loss & Marginalize over all alignments $\pi \in \mathcal{B}^{-1}(Y)$ \\
+\bottomrule
+\end{longtable}
+
+\section{The Conformer Encoder: Mathematical Equations}
+For an input sequence $x_i$ entering the $l$-th Conformer block:
+\begin{align}
+    \tilde{x}_i &= x_i + \frac{1}{2} \text{FFN}(x_i) \\
+    x'_i &= \tilde{x}_i + \text{MHSA}(\tilde{x}_i) \\
+    x''_i &= x'_i + \text{Conv}(x'_i) \\
+    y_i &= \text{LayerNorm}\left(x''_i + \frac{1}{2} \text{FFN}(x''_i)\right)
+\end{align}
+where the Convolution module is defined as:
+\begin{equation}
+    \text{Conv}(z) = \text{Dropout}\left(\text{PointwiseConv}\left(\text{Swish}\left(\text{BatchNorm1d}\left(\text{DepthwiseConv1d}_{k=31}\left(\text{GLU}\left(\text{PointwiseConv}(z)\right)\right)\right)\right)\right)\right)
+\end{equation}
+
+\chapter{Hindi NLP, Devanagari Mechanics, and Tokenization}
+
+\section{Devanagari Script Linguistics}
+Unlike English (an alphabet where consonants and vowels have independent letters) or Chinese (logographic characters), Devanagari is an **Abugida** (alphasyllabary).
+
+\subsection{Structural Components}
+\begin{enumerate}
+    \item \textbf{Inherent Vowel (Schwa):} Every standalone consonant carries an unwritten inherent vowel /a/ (अ). For example, the consonant ``क'' is phonetically /ka/.
+    \item \textbf{Dependent Vowel Signs (Matras):} When a consonant is followed by a vowel other than /a/, a diacritical sign (Matra) is attached to the consonant:
+    $$\text{क (ka)} + \text{ा (aa)} = \text{का (kaa)}, \quad \text{क} + \text{ि (i)} = \text{कि (ki)}, \quad \text{क} + \text{ी (ii)} = \text{की (kee)}$$
+    \item \textbf{Virama / Halant (् - Unicode U+094D):} Suppresses the inherent vowel. It is used to form consonant clusters (samyuktaksar):
+    $$\text{क} + \text{्} + \text{य} = \text{क्य (kya)}$$
+    \item \textbf{Nuqta (़ - Unicode U+093C):} A dot placed below specific consonants to denote Perso-Arabic loan phonemes:
+    $$\text{क} + \text{़} = \text{क़ (qa)}, \quad \text{ज} + \text{़} = \text{ज़ (za)}, \quad \text{फ} + \text{़} = \text{फ़ (fa)}$$
+\end{enumerate}
+
+\section{Tokenization Implementations in ViLiS}
+ViLiS supports two complementary tokenization paradigms in \texttt{utils/tokenizer.py}:
+\begin{itemize}
+    \item \textbf{SentencePiece BPE Tokenizer:} Subword vocabulary of 1,000 tokens. Optimizes CTC decoding by collapsing common syllable sequences into a single emission step.
+    \item \textbf{Native Unicode Character Tokenizer:} Direct character mapping over 75 atomic Devanagari codepoints. Index 0 is reserved strictly for the CTC blank token ($\epsilon$).
+\end{itemize}
+
+\chapter{Training Dynamics, Optimization, and Hardware Strategy}
+
+\section{Hyperparameters and Optimization Schedule}
+\begin{itemize}
+    \item \textbf{Optimizer:} AdamW (Loshchilov \& Hutter, 2017) with $\beta_1 = 0.9, \beta_2 = 0.98, \epsilon = 10^{-8}$, and weight decay $= 10^{-4}$.
+    \item \textbf{Learning Rate Schedule:} \texttt{WarmupCosineScheduler} implemented in \texttt{training/scheduler.py}:
+    \begin{equation}
+        \eta_t = \begin{cases}
+            \eta_{\text{peak}} \cdot \frac{t}{T_{\text{warmup}}}, & \text{if } t < T_{\text{warmup}} \\
+            \eta_{\text{min}} + \frac{1}{2}(\eta_{\text{peak}} - \eta_{\text{min}})\left(1 + \cos\left(\pi \frac{t - T_{\text{warmup}}}{T_{\text{total}} - T_{\text{warmup}}}\right)\right), & \text{if } t \ge T_{\text{warmup}}
+        \end{cases}
+    \end{equation}
+    where $T_{\text{warmup}} = 500$ steps, $\eta_{\text{peak}} = 3 \times 10^{-4}$, and $\eta_{\text{min}} = 10^{-6}$.
+    \item \textbf{Gradient Clipping:} \texttt{torch.nn.utils.clip\_grad\_norm\_(model.parameters(), max\_norm=5.0)}.
+\end{itemize}
+
+\section{Hardware Profile: MacBook Air M4 Engineering Analysis}
+\begin{itemize}
+    \item \textbf{Hardware Specifications:} Apple M4 chip (10-core CPU: 4 Performance cores, 6 Efficiency cores; 10-core GPU; 16 GB Unified LPDDR5 Memory with 120 GB/s bandwidth; 256 GB SSD; fanless chassis).
+    \item \textbf{Thermal Envelope Constraint:} The MacBook Air lacks active fan cooling. Under sustained full-core training load (backpropagating through 50 million parameters over temporal video sequences), SoC temperature reaches $95^\circ\text{C}$ in 8--12 minutes. The macOS kernel throttles core clock frequencies by 30\%--45\% to manage thermals.
+    \item \textbf{The Production Hybrid Strategy:}
+    \begin{itemize}
+        \item \textbf{Local M4 Execution:} Desktop GUI app (\texttt{app/main.py}), camera capture, MediaPipe 25 FPS lip extraction, dataset curation, and real-time inference ($<80$ms latency via MPS/CoreML).
+        \item \textbf{Cloud Execution:} Multi-epoch Conformer pretraining executed on cloud GPUs (Google Colab / Kaggle T4 or A100).
+    \end{itemize}
+\end{itemize}
+
+\chapter{Project Repository Architecture and Code Reference}
+
+\section{Source File Inventory and Component Responsibilities}
+Every file in the repository at \texttt{/Users/sameerkumar/Desktop/vilis/} serves a specific, documented architectural function:
+\begin{itemize}
+    \item \texttt{config/config.py}: Central dataclass configuration (\texttt{ViLiSConfig}) with automatic hardware device resolution (\texttt{cuda} $\to$ \texttt{mps} $\to$ \texttt{cpu}).
+    \item \texttt{model/frontend.py}: Implements \texttt{SpatioTemporalFrontend} (3D-CNN stem + modified ResNet-18).
+    \item \texttt{model/conformer.py}: Implements \texttt{ConformerBlock}, \texttt{SinusoidalPositionalEncoding}, and \texttt{ConformerEncoder}.
+    \item \texttt{model/ctc\_head.py}: Implements \texttt{CTCHead} linear projection and log-softmax emission.
+    \item \texttt{model/vilis\_model.py}: Assembles the complete end-to-end \texttt{ViLiSModel}.
+    \item \texttt{pipelines/lip\_extractor.py}: MediaPipe FaceMesh wrapper with affine roll correction and $96 \times 96$ cropping.
+    \item \texttt{pipelines/whisper\_pipeline.py}: Ingests video audio, generates Whisper Hindi transcripts and word-level timestamps.
+    \item \texttt{pipelines/dataset\_builder.py}: Crops temporal lip segments, compresses into \texttt{.npz} arrays, and generates PyTorch TSV manifests.
+    \item \texttt{training/augmentations.py}: Video augmentation suite (\texttt{VideoAugmentor}).
+    \item \texttt{training/dataset.py}: PyTorch \texttt{ViLiSDataset} and dynamic padding collator \texttt{pad\_collate\_fn}.
+    \item \texttt{training/scheduler.py}: Linear warmup cosine annealing learning rate scheduler.
+    \item \texttt{training/train.py}: Multi-backend training script supporting CUDA AMP, MPS, and CPU.
+    \item \texttt{inference/engine.py}: End-to-end inference engine (\texttt{ViLiSInferenceEngine}).
+    \item \texttt{inference/export\_onnx.py}: Exports PyTorch model to ONNX with dynamic batch and sequence axes.
+    \item \texttt{utils/tokenizer.py}: Dual-mode Hindi SentencePiece and Unicode Devanagari character tokenizer.
+    \item \texttt{utils/metrics.py}: Computes Levenshtein Character Error Rate (CER) and Word Error Rate (WER).
+    \item \texttt{app/main.py}: Full native multi-threaded desktop application (Record, Preview, Dataset, Test Model).
+\end{itemize}
+
+\end{document}
